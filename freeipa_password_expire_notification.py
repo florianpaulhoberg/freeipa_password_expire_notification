@@ -10,6 +10,9 @@
 import datetime
 import time
 import smtplib
+import configparser
+import argparse
+import sys 
 from email.MIMEMultipart import MIMEMultipart
 from email.MIMEBase import MIMEBase
 from email.MIMEText import MIMEText
@@ -18,20 +21,29 @@ from email import Encoders
 from python_freeipa import Client
 
 
-_IPA_PW_DAYS_LEST_ = 7
-_IPA_EMAIL_FROM_ = "FreeIPA Service <no-reply@ipa01.hoberg-systems.ch>"
-_IPA_HOST_ = "ipa01.hoberg-systems.ch"
-_IPA_API_USER_ = "api-user"
-_IPA_API_PW_ = "api-password"
+def parse_config(cliargs):
+    """
+        Parse config file to obtain login credentials and
+        address of remote FreeIPA system.
+    """
+    config = configparser.ConfigParser()
+    config.read(cliargs.config)
+    ipa_user = config['Login']['user']
+    ipa_password = config['Login']['password']
+    ipa_hostname = config['Login']['hostname']
+    ipa_notify_days_remaining = config['Option']['notify_days_remaining']
+    ipa_email_from = config['Option']['email_from'] 
+    ipa_email_body = config['Option']['email_body'] 
+    return ipa_user, ipa_password, ipa_hostname, ipa_notify_days_remaining, ipa_email_from, ipa_email_body
 
 
-def ipa_connect():
+def ipa_connect(ipa_user, ipa_password, ipa_hostname):
     """
         Connect and login to FreeIPA system with a secured
         SSL connection.
     """
-    client = Client(_IPA_HOST_, version='2.215')
-    client.login(_IPA_API_USER_, _IPA_API_PW_)
+    client = Client(ipa_hostname, version='2.215')
+    client.login(ipa_user, ipa_password)
     return client
 
 
@@ -54,25 +66,25 @@ def ipa_fetch_user_attr(client):
     return ipa_users_emails, ipa_users_notification
 
 
-def ipa_notify_user(ipa_notify_mails):
+def ipa_notify_user(ipa_notify_mails, ipa_email_from, ipa_email_body):
     """
         Generate password expire mail and send them via local MTA
         to make sure this'll be queued when remote MTA is unreachable.
     """
     server = "localhost"
-    body = "Hello,\n this mail is to inform you that your password is going to expire within the next few days."
+    body = ipa_email_body
     msg = MIMEMultipart()
-    msg['From'] = _IPA_EMAIL_FROM_
+    msg['From'] = ipa_email_from 
     msg['To'] = COMMASPACE.join(ipa_notify_mails)
     msg['Date'] = formatdate(localtime=True)
     msg['Subject'] = "FreeIPA: Your password will expire soon."
     msg.attach(MIMEText(body))
     smtp = smtplib.SMTP(server)
-    smtp.sendmail(_IPA_EMAIL_FROM_, ipa_notify_mails, msg.as_string())
+    smtp.sendmail(ipa_email_from, ipa_notify_mails, msg.as_string())
     smtp.close()
 
 
-def ipa_pwexire_check(ipa_users_notification, ipa_users_emails):
+def ipa_pwexpire_check(ipa_users_notification, ipa_users_emails, ipa_notify_days_remaining, ipa_email_from, ipa_email_body):
     """
         Check if users password is going to expire within the
         next few days.
@@ -83,19 +95,28 @@ def ipa_pwexire_check(ipa_users_notification, ipa_users_emails):
         start_date = datetime.datetime.strptime(ipa_date_expr, "%Y%m%d")
         end_date = datetime.datetime.strptime(ipa_date_now, "%Y%m%d")
         ipa_days_left = abs((end_date-start_date).days)
-        if ipa_days_left < _IPA_PW_DAYS_LEST_:
+        if ipa_days_left < ipa_notify_days_remaining:
             ipa_notify_mails = []
             ipa_notify_mails.append(single_user)
-            ipa_notify_user(ipa_notify_mails)
+            ipa_notify_user(ipa_notify_mails, ipa_email_from, ipa_email_body)
 
 
 def main():
     """
         Run the main programm
     """
-    client = ipa_connect()
+    argparser = argparse.ArgumentParser(description='FreeIPA password expire notificator.')
+    argparser.add_argument('-C', '--config', type=str, help='Path to config file')
+    cliargs = argparser.parse_args()
+
+    if cliargs.config is None:
+        print "Error: Please define config file."
+        sys.exit(2)
+
+    ipa_user, ipa_password, ipa_hostname, ipa_notify_days_remaining, ipa_email_from, ipa_email_body = parse_config(cliargs)
+    client = ipa_connect(ipa_user, ipa_password, ipa_hostname)
     ipa_users_emails, ipa_users_notification = ipa_fetch_user_attr(client)
-    ipa_pwexire_check(ipa_users_notification, ipa_users_emails)
+    ipa_pwexpire_check(ipa_users_notification, ipa_users_emails, ipa_notify_days_remaining, ipa_email_from, ipa_email_body)
 
 
 main()
